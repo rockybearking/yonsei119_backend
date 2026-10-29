@@ -1,0 +1,19 @@
+# 1. 파이참(PyCharm) & 웹스톰(WebStorm) 에디터 개인 설정 제외
+.idea/
+.vscode/
+
+# 2. 백엔드(Django) 가상환경 및 임시파일, 테스트 DB 제외
+.venv/
+venv/
+__pycache__/
+*.pyc
+db.sqlite3
+
+# 3. 프론트엔드(JS) 무거운 패키지 폴더 및 빌드 결과물 제외
+node_modules/
+dist/
+build/
+
+# 4. 비밀번호나 API 키를 적어두는 보안 파일 제외 (나중을 위해 미리 추가)
+.env
+*.env

@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <!-- ==========================================================================
+         [1. 문서 기본 설정 및 뷰포트 메타 태그]
+         - 모바일 사파리, 크롬 등 다양한 디바이스 환경에서 Safe Area 대응 (viewport-fit=cover)
+         - 핀치 줌 방지 대신 가독성을 보장하고, PWA 환경 및 테마 색상 지정
+         ========================================================================== -->
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#f6f8fc">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <meta name="format-detection" content="telephone=no">
+    <meta name="description" content="전국 응급의료기관 실시간 가용병상, 중증응급질환 수용여부, 가용 의료장비 현황 지도 관제 서비스">
+
+    <title>전국 응급의료기관 실시간 정보</title>
+
+    <!-- ==========================================================================
+         [2. 성능 최적화: 외부 리소스 사전 연결 (Preconnect / DNS Prefetch)]
+         - 폰트 제공처(네이버) 및 지도 API(카카오), 공공데이터 포털 도메인 사전 핸드셰이크
+         ========================================================================== -->
+    <link rel="preconnect" href="https://hangeul.pstatic.net" crossorigin>
+    <link rel="preconnect" href="https://dapi.kakao.com" crossorigin>
+    <link rel="dns-prefetch" href="https://apis.data.go.kr">
+
+    <!-- 본고딕/나눔스퀘어 네오 웹폰트 및 시스템 스타일시트 -->
+    <link rel="stylesheet" href="https://hangeul.pstatic.net/hangeul_static/css/nanum-square-neo.css">
+    <link rel="stylesheet" href="style.css">
+
+    <!-- ==========================================================================
+         [3. 스크립트 비동기 지연 로드 (defer)]
+         - 카카오맵 SDK: 지도 서비스 및 라이브러리(services) 로드
+         - app.js: 애플리케이션 핵심 로직 (API 연동, 상태 관리, 지도 시각화, 바텀시트)
+         ========================================================================== -->
+    <script
+            src="https://dapi.kakao.com/v2/maps/sdk.js?appkey=64961e084dede515b221656f5fe6600c&amp;libraries=services&amp;autoload=false"
+            defer
+    ></script>
+    <script src="app.js" defer></script>
+</head>
+
+<body>
+<!-- ==========================================================================
+     [4. 메인 지도 뷰포트]
+     - 카카오맵 인스턴스가 동적으로 마운트되는 최하단 풀스크린 레이어
+     ========================================================================== -->
+<main id="map" aria-label="응급의료기관 지도"></main>
+
+<!-- ==========================================================================
+     [5. 상단 관제 패널: top-panel]
+     - 공공데이터 실시간 갱신 시각 및 현재 로드된 응급의료기관 수 표출
+     - 접기/펼치기 토글, 현재 GPS 좌표 표시 및 이용안내 모달 호출 버튼 포함
+     ========================================================================== -->
+<header id="top-panel" class="top-panel" aria-label="지도 정보">
+    <div class="panel-heading top-heading">
+        <div class="top-summary" aria-live="polite" aria-atomic="true">
+            <!-- 최종 API 데이터 동기화 시간 -->
+            <p class="updated-line">
+                갱신 시간 <time id="updated-time">확인 중</time>
+            </p>
+            <!-- 현재 관제 중인 기관 총계 -->
+            <p id="institution-count" class="institution-count">
+                기관 목록 확인 중
+            </p>
+        </div>
+
+        <!-- 상단 패널 접기/펼치기 토글 버튼 -->
+        <button
+                id="top-toggle"
+                class="panel-toggle"
+                type="button"
+                aria-expanded="true"
+                aria-controls="top-content"
+                aria-label="지도 정보 접기"
+        >
+            접기
+        </button>
+    </div>
+
+    <div id="top-content">
+        <!-- 현재 시스템 통신 및 로딩 상태 안내 -->
+        <p id="status" role="status" aria-live="polite">
+            정보 확인 중…
+        </p>
+
+        <!-- 사용자 중심 GPS 위도/경도 또는 서울시청 기준 좌표 -->
+        <p id="coordinates" class="coordinates" aria-live="polite">
+            위치 확인 중입니다.
+        </p>
+
+        <!-- 부가 도구 (이용 안내 모달 열기) -->
+        <div class="top-tools">
+            <button id="notice-open" class="text-button" type="button">
+                이용 안내
+            </button>
+        </div>
+    </div>
+</header>
+
+<!-- ==========================================================================
+     [6. 검색 및 필터 패널: search-panel]
+     - 탐색 반경 변경 팝오버(5km ~ 전국)
+     - 내 위치 이동 버튼 및 전체 데이터 수동 재동기화 새로고침 버튼
+     - 실시간 병원명 자동완성/검색 입력폼
+     - 기관 유형별 다중 필터 (권역응급 / 상급종합 / 의료원 / 일반)
+     ========================================================================== -->
+<section
+        id="search-panel"
+        class="search-panel"
+        aria-label="병원 검색과 필터"
+>
+    <div class="panel-heading">
+        <span class="search-heading">검색</span>
+
+        <!-- 지도 조작 액션 툴바 (반경 설정, 내 위치 이동, 새로고침) -->
+        <nav class="map-actions" aria-label="지도 조작">
+            <!-- 반경 설정 팝오버 도구 -->
+            <div class="radius-tool">
+                <button
+                        id="radius-button"
+                        class="map-action radius-button"
+                        type="button"
+                        aria-expanded="false"
+                        aria-controls="radius-popover"
+                        aria-label="탐색 반경 설정, 현재 10 km"
+                        title="탐색 반경 설정"
+                >
+                    <span class="radius-button-label">반경</span>
+                    <span id="radius-value">10 km</span>
+                </button>
+
+                <section
+                        id="radius-popover"
+                        class="radius-popover"
+                        aria-labelledby="radius-title"
+                        hidden
+                >
+                    <div class="panel-heading">
+                        <h2 id="radius-title">탐색 반경</h2>
+
+                        <button
+                                id="radius-close"
+                                class="panel-toggle"
+                                type="button"
+                                aria-label="반경 설정 닫기"
+                        >
+                            닫기
+                        </button>
+                    </div>
+
+                    <label class="sr-only" for="radius">
+                        탐색 반경 선택
+                    </label>
+
+                    <select id="radius" aria-describedby="radius-help">
+                        <option value="5">5 km</option>
+                        <option value="10" selected>10 km</option>
+                        <option value="20">20 km</option>
+                        <option value="50">50 km</option>
+                        <option value="100">100 km</option>
+                        <option value="all">전국</option>
+                    </select>
+
+                    <p id="radius-help">
+                        서울시청 기준 · 선택하면 바로 적용됩니다.
+                    </p>
+                </section>
+            </div>
+
+            <!-- 내 위치 이동 버튼 (Geolocation API 연동) -->
+            <button
+                    id="location-button"
+                    class="map-action"
+                    type="button"
+                    title="내 위치로 이동"
+                    aria-label="내 위치 확인 및 반경 맞추기"
+            >
+                <svg
+                        viewBox="0 0 24 24"
+                        aria-hidden="true"
+                        focusable="false"
+                >
+                    <circle cx="12" cy="12" r="7"></circle>
+                    <circle cx="12" cy="12" r="2.5"></circle>
+                    <path d="M12 2v3 M12 19v3 M2 12h3 M19 12h3"></path>
+                </svg>
+            </button>
+
+            <!-- 전체 데이터 수동 재동기화 새로고침 버튼 -->
+            <button
+                    id="refresh-button"
+                    class="map-action"
+                    type="button"
+                    title="전체 데이터 새로고침"
+                    aria-label="전체 데이터 새로고침"
+            >
+                <svg
+                        class="refresh-icon"
+                        viewBox="0 0 24 24"
+                        aria-hidden="true"
+                        focusable="false"
+                >
+                    <path d="M19 10a7.2 7.2 0 1 0 .1 4"></path>
+                    <path d="M19 4v6h-6"></path>
+                </svg>
+            </button>
+        </nav>
+
+        <!-- 검색 패널 접기/펼치기 토글 버튼 -->
+        <button
+                id="search-toggle"
+                class="panel-toggle"
+                type="button"
+                aria-expanded="true"
+                aria-controls="search-content"
+                aria-label="검색 접기"
+        >
+            접기
+        </button>
+    </div>
+
+    <!-- 검색 입력창 및 필터 체크박스 영역 -->
+    <div id="search-content">
+        <div class="search-row">
+            <form id="search-form" autocomplete="off">
+                <label class="sr-only" for="keyword">병원 이름</label>
+
+                <input
+                        id="keyword"
+                        type="search"
+                        placeholder="병원 이름 검색"
+                        aria-controls="search-results"
+                        enterkeyhint="search"
+                >
+
+                <button type="submit">검색</button>
+            </form>
+        </div>
+
+        <!-- 병원 검색 결과 목록 드롭다운 -->
+        <ul
+                id="search-results"
+                class="search-results"
+                aria-label="검색 결과"
+                hidden
+        ></ul>
+
+        <!-- 기관 분류 필터 체크박스 (권역 / 상급 / 의료원 / 일반) -->
+        <div class="filters">
+            <label class="regional">
+                <input id="filter-regional" type="checkbox" checked>
+                권역응급
+            </label>
+
+            <label class="tertiary">
+                <input id="filter-tertiary" type="checkbox" checked>
+                상급종합
+            </label>
+
+            <label class="medical">
+                <input id="filter-medical" type="checkbox" checked>
+                의료원
+            </label>
+
+            <label class="other">
+                <input id="filter-other" type="checkbox" checked>
+                일반·기타
+            </label>
+        </div>
+
+        <!-- 지도 화면 내 표시 중인 병원 수 카운터 -->
+        <p id="map-count" class="map-count" role="status"></p>
+    </div>
+</section>
+
+<!-- ==========================================================================
+     [7. 모바일 반응형 바텀시트 (Bottom Sheet) & 딤 배경 레이어]
+     - 병원 마커 클릭 시 부드럽게 슬라이드 업되는 상세 정보 관제창
+     - 모바일 터치 드래그 제스처 핸들 포함
+     ========================================================================== -->
+<div id="sheet-dim" class="sheet-dim" hidden></div>
+
+<section
+        id="sheet"
+        class="sheet"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="hospital-name"
+        aria-hidden="true"
+        inert
+>
+    <!-- 모바일 터치 드래그 제스처 바 (스와이프하여 닫기) -->
+    <div
+            id="sheet-drag-handle"
+            class="sheet-drag-handle"
+            aria-hidden="true"
+    >
+        <span></span>
+    </div>
+
+    <!-- 바텀시트 헤더: 병원 기본 정보 및 닫기 버튼 -->
+    <div class="sheet-header">
+        <div>
+            <p id="sheet-updated" class="sheet-updated"></p>
+            <span id="hospital-type" class="type-badge"></span>
+            <h1 id="hospital-name">병원 상세 정보</h1>
+            <p id="hospital-address" class="muted"></p>
+            <p id="hospital-distance" class="muted"></p>
+        </div>
+
+        <button
+                id="sheet-close"
+                class="close-button"
+                type="button"
+                aria-label="상세 정보 닫기"
+        >
+            ×
+        </button>
+    </div>
+
+    <!-- 바텀시트 스크롤 콘텐츠 영역 -->
+    <div class="sheet-scroll">
+        <!-- 응급 안전 주의사항 (시차 안내 및 유선 확인 권고) -->
+        <p class="safety-note">
+            정보에는 갱신 시차가 있습니다.
+            이송·방문 전에 병원에 수용 가능 여부를 전화로 확인하세요.
+        </p>
+
+        <!-- 빠른 전화 연결 및 길찾기 링크 버튼 그룹 -->
+        <div id="contact-actions" class="contact-actions"></div>
+
+        <!-- [세부 섹션 1] 실시간 긴급 진료 공지 (E-Gen 메시지 연동) -->
+        <section class="detail-section" id="section-messages">
+            <div class="section-heading">
+                <h2>진료 공지</h2>
+                <span id="message-count"></span>
+            </div>
+            <div id="messages" class="message-list"></div>
+        </section>
+
+        <!-- [세부 섹션 2] 응급실 가용 병상 현황 (일반, 소아, 음압격리 등) -->
+        <section class="detail-section" id="section-er-beds">
+            <div class="section-heading">
+                <h2>응급실 병상</h2>
+                <span id="bed-time"></span>
+            </div>
+            <div id="er-beds-board" class="egen-board-wrapper"></div>
+        </section>
+
+        <!-- [세부 섹션 3] 입원 및 중환자실 병상 현황 (내과, 외과, 신경외과 등) -->
+        <section class="detail-section" id="section-inpatient-beds">
+            <div class="section-heading">
+                <h2>입원 병상</h2>
+            </div>
+            <div id="inpatient-beds-board" class="egen-board-wrapper"></div>
+        </section>
+
+        <!-- [세부 섹션 4] 가용 의료 장비 현황 (CT, MRI, ECMO, 인공호흡기 등) -->
+        <section class="detail-section" id="section-equipment">
+            <div class="section-heading">
+                <h2>가용 장비</h2>
+            </div>
+            <div id="equipment" class="egen-board-wrapper"></div>
+        </section>
+
+        <!-- [세부 섹션 5] 중증응급질환 27종 수용 가능 여부 -->
+        <section class="detail-section" id="section-severe">
+            <div class="section-heading">
+                <h2>중증응급질환 수용 현황</h2>
+                <span id="severe-time"></span>
+            </div>
+            <div id="severe" class="egen-board-wrapper"></div>
+        </section>
+
+        <!-- 레거시 호환용 숨김 컨테이너 -->
+        <div id="beds-board" hidden></div>
+        <p id="data-state" class="data-state"></p>
+
+        <!-- [세부 섹션 6] 개발자 모드: API 원본 데이터 검증기 (수동 검증 입증용) -->
+        <details id="developer-mode" class="developer-mode">
+            <summary>
+                개발자모드
+                <small>펼치면 전체 정보를 다시 조회합니다</small>
+            </summary>
+
+            <div class="developer-content">
+                <p class="developer-status" role="status" aria-live="polite">
+                    <span
+                            id="developer-spinner"
+                            class="spinner"
+                            aria-hidden="true"
+                            hidden
+                    ></span>
+                    <span id="developer-status">
+                        API 원본 필드와 상세 정보를 확인할 수 있습니다.
+                    </span>
+                </p>
+
+                <!-- 원본 가용/기준 병상 XML 필드값 (hv1~hv61, hvs01~hvs61) -->
+                <details class="raw-details">
+                    <summary>세부 병상·중환자실·시술 항목 전체 보기 (hv / hvs 원본값)</summary>
+                    <div id="all-beds" class="raw-content"></div>
+                </details>
+
+                <!-- 원본 중증질환 수용성 필드값 (mkioskty 1~28 및 비고) -->
+                <details class="raw-details" open>
+                    <summary>중증응급질환 수용정보 전체 보기 (mkioskty 1~28 및 비고 원본값)</summary>
+                    <div id="all-severe" class="raw-content"></div>
+                </details>
+
+                <!-- 원본 실시간 진료 공지 메시지 전문 -->
+                <details class="raw-details">
+                    <summary>실시간 진료 공지 원본 전체 보기 (getEmrrmSrsillDissMsgInqire)</summary>
+                    <div id="all-messages" class="raw-content"></div>
+                </details>
+
+                <div id="basic-info" class="basic-info"></div>
+            </div>
+        </details>
+    </div>
+</section>
+
+<!-- ==========================================================================
+     [8. 클러스터 클릭 시 주변 병원 목록 다이얼로그: cluster-dialog]
+     - 지도에서 마커 클러스터를 클릭했을 때 해당 구역 내 병원들을 리스트업
+     ========================================================================== -->
+<dialog
+        id="cluster-dialog"
+        class="cluster-dialog"
+        aria-labelledby="cluster-title"
+>
+    <div class="dialog-heading">
+        <div>
+            <h2 id="cluster-title">주변 병원</h2>
+            <p class="muted">
+                병원 이름을 누르면 상세 정보를 확인합니다.
+            </p>
+        </div>
+
+        <button
+                id="cluster-close"
+                class="close-button"
+                type="button"
+                aria-label="병원 목록 닫기"
+        >
+            ×
+        </button>
+    </div>
+
+    <div id="cluster-list" class="cluster-list"></div>
+
+    <button
+            id="cluster-zoom"
+            class="primary-button"
+            type="button"
+    >
+        이 구역 확대
+    </button>
+</dialog>
+
+<!-- ==========================================================================
+     [9. 법적·의료적 이용 안내 및 면책 공지 다이얼로그: notice-dialog]
+     - 공공데이터 연계 시차 및 실제 병원 현황 간의 구조적 차이에 대한 안전 고지
+     - '이 브라우저에서 다시 보지 않기' localStorage 영속화 지원
+     ========================================================================== -->
+<dialog
+        id="notice-dialog"
+        class="notice-dialog"
+        aria-labelledby="notice-title"
+        aria-describedby="notice-description"
+>
+    <div class="notice-card">
+        <div class="dialog-heading">
+            <h2 id="notice-title">응급의료 정보 이용 안내</h2>
+
+            <button
+                    id="notice-close"
+                    class="close-button"
+                    type="button"
+                    aria-label="이용 안내 닫기"
+            >
+                ×
+            </button>
+        </div>
+
+        <div id="notice-description" class="notice-copy">
+            <p>
+                본 서비스의 병상·진료 정보는 공공데이터 연계 및
+                기관 보고 시점에 따라 실제 병원 현황이나
+                중앙응급의료센터 E-Gen 정보와 차이가 있을 수 있습니다.
+            </p>
+
+            <p>
+                <strong>
+                    응급 상황에는 119에 연락하고,
+                    이송·방문 전 해당 기관에 전화하여
+                    진료 및 수용 가능 여부를 확인해 주세요.
+                </strong>
+            </p>
+
+            <p class="muted">
+                표시된 가용병상 수는 실제 입원·진료를 보장하지 않습니다.
+            </p>
+        </div>
+
+        <button
+                id="notice-confirm"
+                class="primary-button"
+                type="button"
+        >
+            확인했습니다
+        </button>
+
+        <button
+                id="notice-skip"
+                class="text-button"
+                type="button"
+        >
+            이 브라우저에서 다시 보지 않기
+        </button>
+    </div>
+</dialog>
+</body>
+</html>
