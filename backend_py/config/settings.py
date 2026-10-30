@@ -13,12 +13,13 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / '.env')
 
 # 1. 보안 키 설정 (.env에서 안전하게 가져옴)
-SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY')
-PUBLIC_DATA_API_KEY = os.environ.get('PUBLIC_DATA_API_KEY', '')
-KAKAO_MAP_APP_KEY = os.environ.get('KAKAO_MAP_APP_KEY', '')
+SECRET_KEY = os.environ.get('SECRET_KEY')
+PUBLIC_DATA_API_KEY_DECODED = os.environ.get('PUBLIC_DATA_API_KEY_DECODED', '')
+PUBLIC_DATA_API_KEY_ENCODED = os.environ.get('PUBLIC_DATA_API_KEY_ENCODED', '')
+KAKAO_MAP_API_KEY = os.environ.get('KAKAO_MAP_API_KEY', '')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = os.environ.get('DEBUG', 'False').lower() in ('true', '1', 'yes')
 
 ALLOWED_HOSTS = ['*']
 
